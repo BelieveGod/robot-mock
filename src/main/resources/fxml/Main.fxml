@@ -7,17 +7,26 @@
 <?import javafx.scene.layout.*?>
 
 <?import javafx.scene.canvas.Canvas?>
+<?import javafx.scene.shape.Rectangle?>
 <StackPane xmlns="http://javafx.com/javafx"
-            xmlns:fx="http://javafx.com/fxml"
-            fx:controller="cn.nannar.robotmock.fx.controller.MainController"
-            stylesheets="@../css/Main.css"
-            fx:id="mainPane"
-            prefHeight="400.0" prefWidth="600.0">
+           xmlns:fx="http://javafx.com/fxml"
+           fx:controller="cn.nannar.robotmock.fx.controller.MainController"
+           stylesheets="@../css/Main.css"
+           fx:id="mainPane"
+           prefHeight="400.0" prefWidth="600.0">
     <BorderPane>
         <center>
-            <Canvas fx:id="canvas" width="500" height="300">
+            <ScrollPane fx:id="scrollPane">
+                <fx:define>
+                    <Rectangle fx:id="canvasClip" width="500" height="300"/>
+                </fx:define>
+                <Canvas fx:id="canvas" width="500" height="300" >
 
-            </Canvas>
+                </Canvas>
+<!--                <clip>-->
+<!--                    <fx:reference source="canvasClip"/>-->
+<!--                </clip>-->
+            </ScrollPane>
         </center>
         <bottom>
             <BorderPane>
