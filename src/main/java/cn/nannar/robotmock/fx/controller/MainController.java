@@ -111,7 +111,7 @@ public class MainController implements Initializable {
                     try {
                         Point2D point2D = scale.inverseTransform(minX, minY);
                         log.info("1 reversed x:{}   ,y:{}  ",point2D.getX(),point2D.getY());
-                        Point2D point2D1 = scale.deltaTransform(minX, minY);
+                        Point2D point2D1 = scale.transform(minX, minY);
                         log.info("1 delta x:{}   ,y:{}  ",point2D1.getX(),point2D1.getY());
                     } catch (NonInvertibleTransformException e) {
                         e.printStackTrace();
@@ -122,7 +122,7 @@ public class MainController implements Initializable {
                     try {
                         Point2D point2D = scale.inverseTransform(minX, minY);
                         log.info("1 reversed x:{}   ,y:{}  ",point2D.getX(),point2D.getY());
-                        Point2D point2D1 = scale.deltaTransform(minX, minY);
+                        Point2D point2D1 = scale.transform(minX, minY);
                         log.info("1 delta x:{}   ,y:{}  ",point2D1.getX(),point2D1.getY());
                     } catch (NonInvertibleTransformException e) {
                         e.printStackTrace();
@@ -137,7 +137,7 @@ public class MainController implements Initializable {
             try {
                 Point2D point2D = scale.inverseTransform(boundsInParent.getMinX(), boundsInParent.getMinY());
                 log.info(" 2 reversed x:{}   ,y:{}  ",point2D.getX(),point2D.getY());
-                Point2D point2D1 = scale.deltaTransform(boundsInParent.getMinX(), boundsInParent.getMinY());
+                Point2D point2D1 = scale.transform(boundsInParent.getMinX(), boundsInParent.getMinY());
                 log.info(" 2 delta x:{}   ,y:{}  ",point2D1.getX(),point2D1.getY());
             } catch (NonInvertibleTransformException e) {
                 e.printStackTrace();
