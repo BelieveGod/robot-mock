@@ -19,11 +19,12 @@ import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.*;
 import javafx.scene.image.WritableImage;
+import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
+import javafx.scene.layout.Pane;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
-import javafx.scene.transform.NonInvertibleTransformException;
-import javafx.scene.transform.Scale;
+import javafx.scene.transform.*;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
 import lombok.extern.slf4j.Slf4j;
@@ -35,6 +36,7 @@ import java.io.File;
 import java.io.IOException;
 import java.net.URL;
 import java.util.List;
+import java.util.Objects;
 import java.util.ResourceBundle;
 import java.util.concurrent.CompletableFuture;
 
@@ -56,14 +58,17 @@ public class MainController implements Initializable {
     @FXML
     private StackPane mainPane;
     @FXML
-    private ScrollPane scrollPane;
+    private Pane scrollPane;
+    @FXML
+    private Label ratioLb;
 
-    private double zoomCount=0;
-    private Scale scale;
+    private double canvasRatio=1;
+    private Affine scale;
     private double canvasPressedX;
     private double canvasPressedY;
     private double canvasTranslateX;
     private double canvasTranslateY;
+    private KeyCode canvasKeyCode;
 
     @Override
 
@@ -79,6 +84,13 @@ public class MainController implements Initializable {
         GraphicsContext gc = canvas.getGraphicsContext2D();
         gc.setFill(Color.WHITE);
         gc.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
+        scale = new Affine(new Translate(0,0));
+        canvas.getTransforms().add(scale);
+        gc.setFill(Color.BLUE);
+        for(int i=0;i<10;i++){
+            gc.fillOval(i*10,i*10,10,10);
+        }
+
         alert = new Alert(Alert.AlertType.WARNING, "请选择文件夹", ButtonType.OK);
 
         mainPane.addEventHandler(ProgressEvent.LOADING,event -> {
@@ -89,64 +101,47 @@ public class MainController implements Initializable {
             mainPane.getChildren().remove(progressIndicator);
         });
 
-        mainPane.setOnScroll(scrollEvent->{
+        canvas.setOnScroll(scrollEvent->{
+            KeyCode keyCode = (KeyCode) canvas.getUserData();
+            if(keyCode==null || !KeyCode.CONTROL.equals(keyCode)){
+                return;
+            }
             double deltaY = scrollEvent.getDeltaY();
             double x = scrollEvent.getX();
             double y = scrollEvent.getY();
+            log.info("mouseEventX:{} mouseEventY:{}", x, y);
+            int sign=1;
             if(deltaY>0){
-                zoomCount++;
+                sign=1;
             }else{
-                zoomCount--;
+               sign=-1;
             }
+            double rate = (canvasRatio + sign * 0.1) / canvasRatio;
+            canvasRatio = canvasRatio + sign *0.1;
+            scale.appendScale(rate,rate,x,y);
+//            log.info("canvasRatio:{}", canvasRatio);
+            int percent = (int) (canvasRatio * 100);
+            ratioLb.setText(percent+"%");
+            double layoutX = canvas.getLayoutX();
+            double layoutY = canvas.getLayoutY();
+            double translateX = canvas.getTranslateX();
+            double translateY = canvas.getTranslateY();
+            double width = canvas.getWidth();
+            double height = canvas.getHeight();
+            log.info("layoutX:{} layoutY:{} translateX:{},translateY:{},width:{},height:{}",layoutX,layoutY,translateX,translateY,width,height);
             Bounds boundsInParent = canvas.getBoundsInParent();
             printBound(boundsInParent);
-            double minX = boundsInParent.getMinX();
-            double minY = boundsInParent.getMinY();
+            Bounds layoutBounds = canvas.getLayoutBounds();
+            printBound(layoutBounds);
+            Bounds boundsInLocal = canvas.getBoundsInLocal();
+            printBound(boundsInLocal);
+            System.out.println("=============================");
 
-            if(scale!=null){
-                scale.setX(1+0.1*zoomCount);
-                scale.setY(1+0.1*zoomCount);
-                scale.setPivotX(x);
-                scale.setPivotY(y);
-                    try {
-                        Point2D point2D = scale.inverseTransform(minX, minY);
-                        log.info("1 reversed x:{}   ,y:{}  ",point2D.getX(),point2D.getY());
-                        Point2D point2D1 = scale.transform(minX, minY);
-                        log.info("1 delta x:{}   ,y:{}  ",point2D1.getX(),point2D1.getY());
-                    } catch (NonInvertibleTransformException e) {
-                        e.printStackTrace();
-                    }
-            }else{
-                scale = new Scale(1+0.1*zoomCount, 1+0.1*zoomCount,x, y);
-                if(scale!=null){
-                    try {
-                        Point2D point2D = scale.inverseTransform(minX, minY);
-                        log.info("1 reversed x:{}   ,y:{}  ",point2D.getX(),point2D.getY());
-                        Point2D point2D1 = scale.transform(minX, minY);
-                        log.info("1 delta x:{}   ,y:{}  ",point2D1.getX(),point2D1.getY());
-                    } catch (NonInvertibleTransformException e) {
-                        e.printStackTrace();
-                    }
-                }
-                canvas.getTransforms().add(scale);
-            }
-             boundsInParent = canvas.getBoundsInParent();
-            double layoutX2 = canvas.getLayoutX();
-            double layoutY2 = canvas.getLayoutY();
-            printBound(boundsInParent);
-            try {
-                Point2D point2D = scale.inverseTransform(boundsInParent.getMinX(), boundsInParent.getMinY());
-                log.info(" 2 reversed x:{}   ,y:{}  ",point2D.getX(),point2D.getY());
-                Point2D point2D1 = scale.transform(boundsInParent.getMinX(), boundsInParent.getMinY());
-                log.info(" 2 delta x:{}   ,y:{}  ",point2D1.getX(),point2D1.getY());
-            } catch (NonInvertibleTransformException e) {
-                e.printStackTrace();
-            }
         });
 
-        canvas.setOnMousePressed(mouseEvent->{
+        scrollPane.setOnMousePressed(mouseEvent->{
             if (mouseEvent.getButton().equals(MouseButton.PRIMARY)) {
-                canvas.setCursor(Cursor.MOVE);
+                scrollPane.setCursor(Cursor.MOVE);
                 canvasPressedX = mouseEvent.getSceneX();
                 canvasPressedY = mouseEvent.getSceneY();
                 canvasTranslateX=canvas.getTranslateX();
@@ -154,31 +149,60 @@ public class MainController implements Initializable {
             }
         });
 
-        canvas.setOnMouseReleased(mouseEvent->{
+        scrollPane.setOnMouseReleased(mouseEvent->{
             if (mouseEvent.getButton().equals(MouseButton.PRIMARY)) {
-                canvas.setCursor(Cursor.DEFAULT);
+                scrollPane.setCursor(Cursor.DEFAULT);
                 canvasPressedX = mouseEvent.getSceneX();
                 canvasPressedY = mouseEvent.getSceneY();
             }
         });
 
-        canvas.setOnMouseDragged(mouseEvent->{
-            if (canvas.getCursor().equals(Cursor.MOVE)) {
-                double sceneX = mouseEvent.getSceneX();
-                double sceneY = mouseEvent.getSceneY();
-                double deltaX = sceneX - canvasPressedX;
-                double deltaY = sceneY - canvasPressedY;
+        scrollPane.setOnMouseDragged(mouseEvent->{
+            if (scrollPane.getCursor().equals(Cursor.MOVE)) {
+                KeyCode keyCode = (KeyCode) canvas.getUserData();
+                if(KeyCode.SPACE.equals(keyCode)){
+                    double sceneX = mouseEvent.getSceneX();
+                    double sceneY = mouseEvent.getSceneY();
+                    double deltaX = sceneX - canvasPressedX;
+                    double deltaY = sceneY - canvasPressedY;
+//                canvasPressedX=sceneX;
+//                canvasPressedY = sceneY;
 //                log.info("deltaX:{}", deltaX);
 //                log.info("deltaY:{}", deltaY);
 //                log.info("translateX:{}", canvas.getTranslateX());
 //                log.info("translateY:{}", canvas.getTranslateY());
-                canvas.setTranslateX(canvasTranslateX + deltaX);
-                canvas.setTranslateY(canvasTranslateY + deltaY);
+//                scale.appendTranslation(deltaX, deltaY);
+                    canvas.setTranslateX(canvasTranslateX + deltaX);
+                    canvas.setTranslateY(canvasTranslateY + deltaY);
+                }
+
             }
         });
 
-        canvas.setOnMouseClicked(mouseEvent->{
-            log.info("点集坐标：（{}，{}）", mouseEvent.getX(), mouseEvent.getY());
+        canvas.setOnMousePressed(mouseEvent->{
+            if (!canvas.isFocused()) {
+                canvas.requestFocus();
+            }
+        });
+        canvas.setOnKeyPressed(keyEvent->{
+            String character = keyEvent.getCharacter();
+            String text = keyEvent.getText();
+            KeyCode code = keyEvent.getCode();
+            String name = code.getName();
+            log.info("character:{},text:{},name:{}",character,text,name);
+            if (!Objects.equals(canvasKeyCode, code)) {
+                canvas.setUserData(code);
+                canvasKeyCode=code;
+            }
+            switch (code) {
+                case SPACE:
+                    canvas.setCursor(Cursor.OPEN_HAND);
+            }
+        });
+        canvas.setOnKeyReleased(keyEvent->{
+            canvas.setUserData(null);
+            canvasKeyCode=null;
+            canvas.setCursor(Cursor.DEFAULT);
         });
     }
 

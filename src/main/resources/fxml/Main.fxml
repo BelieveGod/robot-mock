@@ -16,18 +16,23 @@
            prefHeight="400.0" prefWidth="600.0">
     <BorderPane>
         <center>
-            <ScrollPane fx:id="scrollPane">
+            <Pane fx:id="scrollPane">
                 <fx:define>
                     <Rectangle fx:id="canvasClip" width="500" height="300"/>
                 </fx:define>
                 <Canvas fx:id="canvas" width="500" height="300" >
 
                 </Canvas>
-<!--                <clip>-->
-<!--                    <fx:reference source="canvasClip"/>-->
-<!--                </clip>-->
-            </ScrollPane>
+                <clip>
+                    <fx:reference source="canvasClip"/>
+                </clip>
+            </Pane>
         </center>
+        <right>
+            <HBox>
+                <Label fx:id="ratioLb"></Label>
+            </HBox>
+        </right>
         <bottom>
             <BorderPane>
                 <center>
