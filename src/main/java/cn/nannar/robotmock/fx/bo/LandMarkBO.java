@@ -8,8 +8,7 @@ import lombok.Data;
  */
 @Data
 public class LandMarkBO {
-    private Integer id;
-    private String instanceName;
+    private String id;
     private Double x;
     private Double y;
 }

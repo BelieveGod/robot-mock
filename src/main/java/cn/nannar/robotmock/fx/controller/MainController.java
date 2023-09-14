@@ -1,9 +1,14 @@
 package cn.nannar.robotmock.fx.controller;
 
+import cn.hutool.core.convert.Convert;
+import cn.hutool.core.date.StopWatch;
 import cn.hutool.core.io.FileUtil;
+import cn.hutool.json.JSONObject;
+import cn.hutool.json.JSONUtil;
 import cn.nannar.robotmock.fx.bo.*;
 import cn.nannar.robotmock.fx.event.ProgressEvent;
 import cn.nannar.robotmock.fx.service.MapService;
+import cn.nannar.robotmock.fx.vo.MapVO;
 import javafx.application.Platform;
 import javafx.concurrent.Task;
 import javafx.embed.swing.SwingFXUtils;
@@ -24,10 +29,13 @@ import javafx.scene.input.MouseButton;
 import javafx.scene.layout.Pane;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
 import javafx.scene.transform.*;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
 import lombok.extern.slf4j.Slf4j;
+import org.dom4j.DocumentException;
 import org.springframework.stereotype.Controller;
 
 import javax.imageio.ImageIO;
@@ -35,9 +43,7 @@ import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
 import java.net.URL;
-import java.util.List;
-import java.util.Objects;
-import java.util.ResourceBundle;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -226,14 +232,31 @@ public class MainController implements Initializable {
             ProgressEvent progressEvent = new ProgressEvent(ProgressEvent.LOADING);
             target.fireEvent(progressEvent);
         }
+        StopWatch all = new StopWatch();
+        all.start("整个过程");
+        StopWatch stopWatch = new StopWatch();
         Task<Boolean> task = new Task<Boolean>() {
             @Override
             protected Boolean call() throws Exception {
                 log.info("正在执行解析...");
-                MapBO mapBO = MapService.parseMapXml(file);
+                stopWatch.start("解析地图");
+                MapBO mapBO = null;
+                try {
+                    mapBO = MapService.parseMapXml(file);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                MapBO tmp=mapBO;
+                stopWatch.stop();
                 log.info("解析完成");
                 Platform.runLater(()->{
-                    paint(mapBO);
+                    stopWatch.start("绘制地图");
+                    paint(tmp);
+                    stopWatch.stop();
+                    StopWatch.TaskInfo[] taskInfo = stopWatch.getTaskInfo();
+                    for (StopWatch.TaskInfo info : taskInfo) {
+                        log.info("{}:{}ms",info.getTaskName(),info.getTimeMillis());
+                    }
                 });
                 return true;
             }
@@ -241,6 +264,8 @@ public class MainController implements Initializable {
         task.setOnSucceeded(workerStateEvent->{
             ProgressEvent progressEvent = new ProgressEvent(ProgressEvent.LOADED);
             Event.fireEvent(mainPane,progressEvent);
+            all.stop();
+            log.info("{}:{}ms",all.getLastTaskName(),all.getLastTaskTimeMillis());
         });
         task.setOnFailed(workerStateEvent->{
             ProgressEvent progressEvent = new ProgressEvent(ProgressEvent.LOADED);
@@ -276,13 +301,18 @@ public class MainController implements Initializable {
     }
 
     private void paint(MapBO mapBO){
+        MapVO mapVO = new MapVO();
         GraphicsContext gc2d = canvas.getGraphicsContext2D();
         gc2d.setFill(Color.WHITE);
         gc2d.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
         double width = canvas.getWidth();
         double height = canvas.getHeight();
+//        double width = 1920;
+//        double height = 1080;
         double mapWidth = mapBO.getMaxPosX() - mapBO.getMinPosX();
         double mapheight = mapBO.getMaxPosY() - mapBO.getMinPosY();
+        mapVO.setWidth(Convert.toInt(width));
+        mapVO.setHeight(Convert.toInt(height));
 
         double widthRatio = width / mapWidth;
         double heightRatio = height / mapheight;
@@ -297,57 +327,91 @@ public class MainController implements Initializable {
             double xOfCanvas = convertCor(x, mapBO.getMinPosX(), ruler);
             double yOfCanvas =height- convertCor(y, mapBO.getMinPosY(), ruler);
             gc2d.fillOval(xOfCanvas - 1, yOfCanvas - 1, 2, 2);
+
+            MapVO.PointVO pointVO = new MapVO.PointVO();
+            pointVO.setX(xOfCanvas);
+            pointVO.setY(yOfCanvas);
+            mapVO.getPointVOList().add(pointVO);
         }
 
         List<LandMarkBO> landMarkBOList = mapBO.getLandMarkBOList();
-        gc2d.setFill(Color.YELLOW);
+        gc2d.setFill(Color.BLUE);
         double radius = 2.5;
         double diametr = radius*2;
+        Font font = Font.font("微软雅黑", FontWeight.BOLD, 5);
+        gc2d.setFont(font);
+        gc2d.setStroke(Color.BLACK);
         for (LandMarkBO landMarkBO : landMarkBOList) {
             Double x = landMarkBO.getX();
             Double y = landMarkBO.getY();
             double xOfCanvas = convertCor(x, mapBO.getMinPosX(), ruler);
             double yOfCanvas =height- convertCor(y, mapBO.getMinPosY(), ruler);
-            gc2d.fillOval(xOfCanvas - radius, yOfCanvas - radius, diametr, diametr);
+            gc2d.fillText(landMarkBO.getId(),xOfCanvas-5,yOfCanvas);
+            gc2d.strokeOval(xOfCanvas - radius, yOfCanvas - radius, diametr, diametr);
+
+            MapVO.PointVO pointVO = new MapVO.PointVO();
+            pointVO.setX(xOfCanvas);
+            pointVO.setY(yOfCanvas);
+            mapVO.getLandMarkVOList().add(pointVO);
         }
 
-        List<ReflectCylinderBO> reflectCylinderBOList = mapBO.getReflectCylinderBOList();
-        gc2d.setFill(Color.GREEN);
-        for (ReflectCylinderBO reflectCylinderBO : reflectCylinderBOList) {
-            Double x = reflectCylinderBO.getX();
-            Double y = reflectCylinderBO.getY();
-            double xOfCanvas = convertCor(x, mapBO.getMinPosX(), ruler);
-            double yOfCanvas = height- convertCor(y, mapBO.getMinPosY(), ruler);
-            gc2d.fillRect(xOfCanvas - radius, yOfCanvas - radius, diametr, diametr);
-        }
+//        List<ReflectCylinderBO> reflectCylinderBOList = mapBO.getReflectCylinderBOList();
+//        gc2d.setFill(Color.GREEN);
+//        for (ReflectCylinderBO reflectCylinderBO : reflectCylinderBOList) {
+//            Double x = reflectCylinderBO.getX();
+//            Double y = reflectCylinderBO.getY();
+//            double xOfCanvas = convertCor(x, mapBO.getMinPosX(), ruler);
+//            double yOfCanvas = height- convertCor(y, mapBO.getMinPosY(), ruler);
+//            gc2d.fillRect(xOfCanvas - radius, yOfCanvas - radius, diametr, diametr);
+//        }
 
         List<PathBO> pathBOList = mapBO.getPathBOList();
         Color[] colors = new Color[]{
                 Color.RED, Color.ORANGE, Color.YELLOW, Color.GREEN,Color.CYAN,Color.BLUE,Color.PURPLE,Color.PINK
         };
 
-        gc2d.setLineDashes(1);
-        for(int i=0;i<pathBOList.size();i++){
-            PathBO pathBO = pathBOList.get(i);
-            LandMarkBO startPos = pathBO.getStartPos();
-            LandMarkBO endPos = pathBO.getEndPos();
-            double o1x = convertCor(startPos.getX(), mapBO.getMinPosX(), ruler);
-            double o1y = height-convertCor(startPos.getY(), mapBO.getMinPosY(), ruler);
+        if(true){
+            gc2d.setLineDashes(1);
+            for(int i=0;i<pathBOList.size();i++){
+                PathBO pathBO = pathBOList.get(i);
+                LandMarkBO startPos = pathBO.getStartPos();
+                LandMarkBO endPos = pathBO.getEndPos();
+                double o1x = convertCor(startPos.getX(), mapBO.getMinPosX(), ruler);
+                double o1y = height-convertCor(startPos.getY(), mapBO.getMinPosY(), ruler);
 
-            double o2x = convertCor(endPos.getX(), mapBO.getMinPosX(), ruler);
-            double o2y = height-convertCor(endPos.getY(), mapBO.getMinPosY(), ruler);
+                double o2x = convertCor(endPos.getX(), mapBO.getMinPosX(), ruler);
+                double o2y = height-convertCor(endPos.getY(), mapBO.getMinPosY(), ruler);
 
-            double c1x = convertCor(pathBO.getControlX1(), mapBO.getMinPosX(), ruler);
-            double c1y = height-convertCor(pathBO.getControlY1(), mapBO.getMinPosY(), ruler);
-            double c2x = convertCor(pathBO.getControlX2(), mapBO.getMinPosX(), ruler);
-            double c2y = height-convertCor(pathBO.getControlY2(), mapBO.getMinPosY(), ruler);
-            gc2d.setStroke(colors[i%colors.length]);
-            gc2d.beginPath();
-            gc2d.moveTo(o1x,o1y);
-            gc2d.bezierCurveTo(c1x, c1y, c2x, c2y, o2x, o2y);
-            gc2d.stroke();
+                double c1x = convertCor(pathBO.getControlX1(), mapBO.getMinPosX(), ruler);
+                double c1y = height-convertCor(pathBO.getControlY1(), mapBO.getMinPosY(), ruler);
+                double c2x = convertCor(pathBO.getControlX2(), mapBO.getMinPosX(), ruler);
+                double c2y = height-convertCor(pathBO.getControlY2(), mapBO.getMinPosY(), ruler);
+                gc2d.setStroke(colors[i%colors.length]);
+                gc2d.beginPath();
+                gc2d.moveTo(o1x,o1y);
+                gc2d.bezierCurveTo(c1x, c1y, c2x, c2y, o2x, o2y);
+                gc2d.stroke();
+
+                MapVO.PathVO pathVO = new MapVO.PathVO();
+                MapVO.PointVO startPoint = new MapVO.PointVO();
+                startPoint.setX(o1x);
+                startPoint.setY(o1y);
+                MapVO.PointVO endPoint = new MapVO.PointVO();
+                endPoint.setX(o2x);
+                endPoint.setY(o2y);
+                pathVO.setStartPoint(startPoint);
+                pathVO.setEndPoint(endPoint);
+                pathVO.setControlX1(c1x);
+                pathVO.setControlY1(c1y);
+                pathVO.setControlX2(c2x);
+                pathVO.setControlY2(c2y);
+                mapVO.getPathVOList().add(pathVO);
+            }
+
         }
 
+//        String s = JSONUtil.toJsonStr(mapVO);
+//        FileUtil.writeUtf8String(s, "E:\\mocksql\\地图数据.json");
     }
 
     private double convertCor(double x,double o,double ruler){
