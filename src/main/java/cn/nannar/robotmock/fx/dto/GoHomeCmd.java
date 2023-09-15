@@ -8,7 +8,7 @@ import lombok.Getter;
  * @author LTJ
  * @date 2022/3/16
  */
-@Getter
+@Data
 public class GoHomeCmd {
     public static final String CMD = "goHome";
     private String cmd=CMD;
@@ -16,7 +16,7 @@ public class GoHomeCmd {
     private Params params=new Params();
 
     @Data
-   private static class Params{
+   public static class Params{
 
 
        private Integer robotId;

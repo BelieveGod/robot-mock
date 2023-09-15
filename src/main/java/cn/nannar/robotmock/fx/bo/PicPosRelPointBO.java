@@ -13,5 +13,7 @@ public class PicPosRelPointBO {
     private Integer segmentNum;
     private double x;
     private double y;
+    private double endX;
+    private double endY;
     private String picPointId;
 }

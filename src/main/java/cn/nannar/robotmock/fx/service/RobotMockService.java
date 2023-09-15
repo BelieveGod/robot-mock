@@ -2,22 +2,33 @@ package cn.nannar.robotmock.fx.service;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.core.date.DatePattern;
 import cn.hutool.core.date.DateUnit;
 import cn.hutool.core.date.DateUtil;
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.StrUtil;
+import cn.nannar.robotmock.entity.BotAlarmLog;
+import cn.nannar.robotmock.entity.BotInspectLog;
+import cn.nannar.robotmock.entity.BotPicPosCfg;
 import cn.nannar.robotmock.fx.bo.LandMarkBO;
 import cn.nannar.robotmock.fx.bo.MapBO;
 import cn.nannar.robotmock.fx.bo.PicPosRelPointBO;
 import cn.nannar.robotmock.fx.constant.RobotStatus;
 import cn.nannar.robotmock.fx.constant.TaskStatus;
-import cn.nannar.robotmock.fx.dto.CreateTaskCmd;
-import cn.nannar.robotmock.fx.dto.RdpsFrame;
-import cn.nannar.robotmock.fx.dto.RealTimeDataDTO;
+import cn.nannar.robotmock.fx.dao.BotAlarmLogMapper;
+import cn.nannar.robotmock.fx.dao.BotInspectLogMapper;
+import cn.nannar.robotmock.fx.dao.BotPicPosCfgMapper;
+import cn.nannar.robotmock.fx.dto.*;
+import cn.nannar.robotmock.fx.tasksatus.SuspendState;
+import cn.nannar.robotmock.fx.tasksatus.TaskState;
+import cn.nannar.robotmock.fx.tasksatus.WaittingState;
+import cn.nannar.robotmock.fx.tasksatus.WorkingState;
 import cn.nannar.robotmock.fx.util.SenderHelper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectWriter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.activemq.command.ActiveMQTextMessage;
 import org.apache.activemq.command.ActiveMQTopic;
@@ -26,14 +37,18 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jms.annotation.JmsListener;
+import org.springframework.jms.core.JmsTemplate;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
+import javax.annotation.Resource;
 import javax.jms.JMSException;
 import javax.jms.Topic;
 import java.io.File;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.function.Function;
 
@@ -44,14 +59,17 @@ import java.util.function.Function;
 @Service
 @Slf4j
 public class RobotMockService {
-
+    public static final String GATHER_JSON = "result.json";
+    public static final String R_1_IMG = "r_1.jpg";
+    public static final String REF_IMG = "ref.jpg";
+    public static final String SINGLE_JSON = "result.json";
 
 
     private Integer robotId=1;
 
     private RobotStatus robotStatus=RobotStatus.IDLE;
 
-    private List<RealTimeDataDTO.Task> taskList = new LinkedList<>();
+    public List<RealTimeDataDTO.Task> taskList = new LinkedList<>();
 
     private MockBattery mockBattery = new MockBattery(new Date());
 
@@ -63,24 +81,34 @@ public class RobotMockService {
 
     private MockCameraOfNavigation mockCameraOfNavigation = new MockCameraOfNavigation();
 
-    private MockLift mockLift = new MockLift();
+    private MockLift mockLift = new MockLift(1);
 
     private MapBO mapBO;
 
-    private Map<String,PicPosRelPointBO> picPointIdMap=Collections.emptyMap();
-    private Map<String, Map<String, Object>> botPicPosCfgMap = new HashMap<>();
+    public Map<String,PicPosRelPointBO> picMapLandmarkMap =Collections.emptyMap();
+    public Map<String, BotPicPosCfg> botPicPosCfgMap = new HashMap<>();
+    public List<RealTimePicPointDoneDTO> donePicPointList = new LinkedList<>();
 
     private List<String> robotTroubleCodeList = new LinkedList<>();
 
     @Value("${robot.mapFile}")
     private String mapFileStr;
 
+    @Value(("${robot.mockDataFile}"))
+    private String mockDataFileStr;
+
+    @Value(("${robot.dcsData}"))
+    private String dcsData;
+
     private Map<String, Function<RdpsFrame<?>,?>> cmdHandleMap = new HashMap<>();
 
+
     @Autowired
-    private JdbcTemplate jdbcTemplate;
-    private Topic cmdTopic = new ActiveMQTopic("/web/cmd");
+    private JmsTemplate jmsTemplate;
+
     private Topic ackTopic = new ActiveMQTopic("/rdps/ack");
+    private Topic resultDoneTopic = new ActiveMQTopic("/rdps/realTime/resultDone");
+    private Topic realTimeTopic = new ActiveMQTopic("/rdps/realTime/data");
 
     @Autowired
     private ThreadPoolTaskScheduler threadPoolTaskScheduler;
@@ -88,12 +116,18 @@ public class RobotMockService {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Resource
+    private BotPicPosCfgMapper botPicPosCfgMapper;
+
+    @Resource
+    private BotInspectLogMapper botInspectLogMapper;
+
+    @Resource
+    private BotAlarmLogMapper botAlarmLogMapper;
+
+    public ObjectWriter objectWriter;
 
 
-    private String sql = "SELECT id,agv_parking_seq parkPoint,pic_seq picPoint,carriage_code carriageCode,axle_code axleCode " +
-            "FROM bot_pic_pos_cfg " +
-            "WHERE mfrs_code=0 and status=1 " +
-            "ORDER BY pic_seq";
     @PostConstruct
     public void init(){
         File file = FileUtil.file(mapFileStr);
@@ -104,7 +138,12 @@ public class RobotMockService {
         }
 
         // 查询数据库的拍照点配置
-        List<Map<String, Object>> botPicPosCfgList = jdbcTemplate.queryForList(sql);
+
+        LambdaQueryWrapper<BotPicPosCfg> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(BotPicPosCfg::getMfrsCode, 0);
+        wrapper.eq(BotPicPosCfg::getStatus, 1);
+        wrapper.orderByAsc(BotPicPosCfg::getPicSeq);
+        List<BotPicPosCfg> botPicPosCfgList = botPicPosCfgMapper.selectList(wrapper);
         List<LandMarkBO> pointBOList = mapBO.getLandMarkBOList();
         List<PicPosRelPointBO> picPosRelPointBOList = new LinkedList<>();
         Map<String, PicPosRelPointBO> picPointIdMapping = new HashMap<>();
@@ -115,8 +154,8 @@ public class RobotMockService {
             int remain = botPicPosCfgList.size() - theLastBegin;
 
             for(int i=0,size=botPicPosCfgList.size();i<size;i++){
-                Map<String, Object> botPicPosCfg = botPicPosCfgList.get(i);
-                String picPointId = (String) botPicPosCfg.get("id");
+                BotPicPosCfg botPicPosCfg = botPicPosCfgList.get(i);
+                String picPointId = botPicPosCfg.getId();
                 botPicPosCfgMap.put(picPointId, botPicPosCfg);
                 if(i<theLastBegin){
                     int segmentNum = i / pointPerSpan;
@@ -132,6 +171,8 @@ public class RobotMockService {
                     picPosRelPointBO.setEndPointName(endPoint.getId());
                     picPosRelPointBO.setX(startPoint.getX()+deltaX*numInSegment);
                     picPosRelPointBO.setY(startPoint.getY() + deltaY * numInSegment);
+                    picPosRelPointBO.setEndX(endPoint.getX());
+                    picPosRelPointBO.setEndY(endPoint.getY());
                     picPosRelPointBOList.add(picPosRelPointBO);
                     picPointIdMapping.put(picPointId, picPosRelPointBO);
                 }else{
@@ -155,8 +196,8 @@ public class RobotMockService {
 
         }else{
             for(int i=0,size=botPicPosCfgList.size();i<size;i++) {
-                Map<String, Object> botPicPosCfg = botPicPosCfgList.get(i);
-                String picPointId = (String) botPicPosCfg.get("id");
+                BotPicPosCfg botPicPosCfg = botPicPosCfgList.get(i);
+                String picPointId = botPicPosCfg.getId();
                 botPicPosCfgMap.put(picPointId, botPicPosCfg);
                 LandMarkBO landMarkBO = pointBOList.get(i);
                 int nextIdx=i+1;
@@ -176,27 +217,189 @@ public class RobotMockService {
                 picPosRelPointBO.setEndPointName(endPoint.getId());
                 picPosRelPointBO.setX(startPoint.getX());
                 picPosRelPointBO.setY(startPoint.getY());
+                picPosRelPointBO.setEndX(endPoint.getX());
+                picPosRelPointBO.setEndY(endPoint.getY());
                 picPosRelPointBOList.add(picPosRelPointBO);
                 picPointIdMapping.put(picPointId, picPosRelPointBO);
             }
         }
-        picPointIdMap = Collections.unmodifiableMap(picPointIdMapping);
+        picMapLandmarkMap = Collections.unmodifiableMap(picPointIdMapping);
+        /* begin ==========命令响应============= */
         cmdHandleMap.put(CreateTaskCmd.CMD, this::handleCreateTask);
-        threadPoolTaskScheduler.scheduleWithFixedDelay(this::sendRealTimeData, 5000);
+        cmdHandleMap.put(SuspendTaskCmd.CMD, this::handleSuspend);
+        cmdHandleMap.put(ResumeTaskCmd.CMD, this::handleResume);
+        cmdHandleMap.put(StopTaskCmd.CMD, this::handleStop);
+        cmdHandleMap.put(ChangeQueuePosCmd.CMD, this::handleChangeQueuePos);
+        cmdHandleMap.put(GoHomeCmd.CMD, this::handleGohome);
+        /* end ============命令响应============ */
 
+        /* begin ==========消息推送============= */
+        threadPoolTaskScheduler.scheduleWithFixedDelay(this::sendRealTimeData, 5000);
+        threadPoolTaskScheduler.scheduleWithFixedDelay(this::sendDoneData, 5000);
+        /* end ============消息推送============ */
+        objectWriter = objectMapper.writerWithDefaultPrettyPrinter();
     }
 
+    /**
+     * 发送完成任务的数据
+     */
+    private void sendDoneData(){
+        RealTimePicPointDoneDTO remove=null;
+        synchronized (donePicPointList){
+            if(!donePicPointList.isEmpty()){
+                 remove = donePicPointList.remove(0);
+            }
+        }
+        // todo
+        if(remove!=null){
+            BotInspectLog botInspectLog = botInspectLogMapper.selectById(remove.getTaskId());
+            /* begin ==========操作磁盘============= */
+            String dir = remove.getDir();
+            String picPointId = remove.getPicPointId();
+            File traceFile = FileUtil.file(dcsData, dir);
+            if (!traceFile.exists()) {
+                log.info("创建目录：{}",traceFile);
+                FileUtil.mkdir(traceFile);
+            }
+
+            ResultJsonGatherDO resultJsonGatherDO=null;
+            File gatherJson = FileUtil.file(traceFile, GATHER_JSON);
+            if(gatherJson.exists()){
+                try {
+                    resultJsonGatherDO= objectMapper.readValue(FileUtil.readUtf8String(gatherJson), ResultJsonGatherDO.class);
+                } catch (Exception e) {
+                    log.error("", e);
+                }
+            }
+            if(resultJsonGatherDO==null){
+
+                resultJsonGatherDO = new ResultJsonGatherDO();
+                resultJsonGatherDO.setTaskId(remove.getTaskId());
+                resultJsonGatherDO.setRobotId(botInspectLog.getBotCode());
+                resultJsonGatherDO.setCmdSrc(remove.getCmdSrc());
+                resultJsonGatherDO.setLaneId(botInspectLog.getParkingLaneCode());
+                resultJsonGatherDO.setTraceTime(botInspectLog.getTraceTime());
+                resultJsonGatherDO.setTrainNo(botInspectLog.getTrainNo());
+            }
+            ResultJsonSingleDO resultJsonSingleDO=null;
+            if(!remove.getFinished()){
+                List<ResultJsonSingleDO> photoData = resultJsonGatherDO.getPhotoData();
+                if(photoData==null){
+                    photoData = new LinkedList<>();
+                    resultJsonGatherDO.setPhotoData(photoData);
+                }
+                 resultJsonSingleDO = new ResultJsonSingleDO();
+                resultJsonSingleDO.setTrainNo(botInspectLog.getTrainNo());
+                resultJsonSingleDO.setRobotId(botInspectLog.getBotCode());
+                resultJsonSingleDO.setLaneId(botInspectLog.getParkingLaneCode());
+                resultJsonSingleDO.setTraceTime(botInspectLog.getTraceTime());
+                resultJsonSingleDO.setDirection(botInspectLog.getDirection());
+
+                resultJsonSingleDO.setPicPointId(remove.getPicPointId());
+                resultJsonSingleDO.setTaskId(remove.getTaskId());
+                resultJsonSingleDO.setCmdSrc(remove.getCmdSrc());
+                resultJsonSingleDO.setCarriage(remove.getCarriage());
+                resultJsonSingleDO.setPartInfo(remove.getPartInfo());
+                resultJsonSingleDO.setAgvPosPercent(remove.getAgvPosPercent());
+                if(remove.getPartInfo()!=null){
+                    resultJsonSingleDO.setErrorNum(remove.getPartInfo().size());
+                }
+                photoData.add(resultJsonSingleDO);
+            }
+
+            try {
+                String s = objectWriter.writeValueAsString(resultJsonGatherDO);
+                FileUtil.writeUtf8String(s, gatherJson);
+            } catch (JsonProcessingException e) {
+                log.error("", e);
+            }
+
+            if(!remove.getFinished()){
+                File picPointDir = FileUtil.file(dcsData, dir, picPointId);
+                if(!picPointDir.exists()){
+                    FileUtil.mkdir(picPointDir);
+                }
+                File singleJson = FileUtil.file(picPointDir, SINGLE_JSON);
+                try {
+                    String s = objectWriter.writeValueAsString(resultJsonSingleDO);
+                    FileUtil.writeUtf8String(s, singleJson);
+                } catch (JsonProcessingException e) {
+                    log.error("", e);
+                }
+                File srcR1Img = FileUtil.file(mockDataFileStr, R_1_IMG);
+                if(srcR1Img.exists()){
+                    FileUtil.copyFile(srcR1Img, FileUtil.file(picPointDir, R_1_IMG));
+                }
+                File srcRefImg = FileUtil.file(mockDataFileStr, REF_IMG);
+                if(srcRefImg.exists()){
+                    FileUtil.copyFile(srcRefImg,   FileUtil.file(picPointDir, REF_IMG));
+                }
+            }
+
+
+
+
+            /* end ============操作磁盘============ */
+
+            /* begin ==========上送告警============= */
+            if(!remove.getFinished()){
+                List<ResultJsonSingleDO.ErrorInfo> partInfo = remove.getPartInfo();
+                if(partInfo!=null){
+                    for(int i=0,size=partInfo.size();i<size;i++){
+                        ResultJsonSingleDO.ErrorInfo errorInfo = partInfo.get(i);
+                        BotAlarmLog botAlarmLog = new BotAlarmLog();
+                        botAlarmLog.setPicPointId(remove.getPicPointId());
+                        botAlarmLog.setBotInspectId(botInspectLog.getId());
+                        botAlarmLog.setTrainNo(botInspectLog.getTrainNo());
+                        botAlarmLog.setBotCode(botAlarmLog.getBotCode());
+                        botAlarmLog.setCarriageCode(remove.getCarriage());
+                        botAlarmLog.setArrIdx(i);
+                        botAlarmLog.setVersion(0);
+                        botAlarmLog.setFlagAlarm(3);
+                        botAlarmLog.setDescription(errorInfo.getResultDesc());
+                        botAlarmLog.setCreateTime(new Date());
+                        botAlarmLog.setCheckId(19);
+                        botAlarmLog.setAlarmLevel(1);
+                        botAlarmLog.setAlarmStatus(0);
+                        botAlarmLog.setAlarmValue(new BigDecimal("1"));
+                        botAlarmLog.setDaAlarmValue(new BigDecimal("1"));
+                        botAlarmLog.setDaAlarmLevel(1);
+                        botAlarmLog.setAlarmMark(0);
+                        botAlarmLog.setAlarmImgXy(CollUtil.join(errorInfo.getPicRect(), ","));
+                        botAlarmLogMapper.insert(botAlarmLog);
+                    }
+                }
+            }
+            /* end ============上送告警============ */
+
+            /* begin ==========发送信号============= */
+            try {
+                RdpsFrame<RealTimePicPointDoneDTO> rdpsFrame = new RdpsFrame<>();
+                rdpsFrame.setMsgType("normal");
+                rdpsFrame.setPublisher("mockrobot");
+                rdpsFrame.setPublishTime(new Date());
+                rdpsFrame.setSeq(SenderHelper.getSeqAndIncrement());
+                rdpsFrame.setData(remove);
+                String s = objectWriter.writeValueAsString(rdpsFrame);
+                log.info("发送完成点：{}", picPointId);
+                jmsTemplate.convertAndSend(resultDoneTopic,s);
+            } catch (JsonProcessingException e) {
+                log.error("", e);
+            }
+            /* end ============发送信号============ */
+        }
+
+    }
 
     /**
      * 发送实时信息数据
      */
     private void sendRealTimeData(){
         /* begin ==========推进任务先============= */
-        /* end ============xxx============ */
+        stepTask();
+        /* end ============推进任务先============ */
 
         RealTimeDataDTO realTimeDataDTO = new RealTimeDataDTO();
-
-
         RealTimeDataDTO.RobotInfo robotInfo = new RealTimeDataDTO.RobotInfo();
         robotInfo.setId(robotId);
         robotInfo.setCharging(mockBattery.getCharging());
@@ -229,6 +432,13 @@ public class RobotMockService {
         realTimeDataDTORdpsFrame.setSeq(seq);
         realTimeDataDTORdpsFrame.setData(realTimeDataDTO);
 
+        try {
+            String s = objectWriter.writeValueAsString(realTimeDataDTORdpsFrame);
+            jmsTemplate.convertAndSend(realTimeTopic,s);
+        } catch (JsonProcessingException e) {
+            log.error("", e);
+        }
+
     }
 
 
@@ -259,16 +469,11 @@ public class RobotMockService {
         }
         JsonNode jsonNode = objectMapper.valueToTree(rdpsFrame.getData());
         String cmd = jsonNode.get("cmd").asText();
-        if("createTask".equals(cmd)){
-            Class<?> createTaskCmdClass = CreateTaskCmd.class;
-            try {
-                Object o = objectMapper.treeToValue(jsonNode, createTaskCmdClass);
-            } catch (JsonProcessingException e) {
-                e.printStackTrace();
-            }
-        }else{
-
+        Function<RdpsFrame<?>, ?> rdpsFrameFunction = cmdHandleMap.get(cmd);
+        if(rdpsFrameFunction!=null){
+            rdpsFrameFunction.apply(rdpsFrame);
         }
+
 
         System.out.println("rdpsFrame = " + rdpsFrame);
 //        ObjectNode cmdWrapper = (ObjectNode) rdpsFrame.getData();
@@ -345,19 +550,38 @@ public class RobotMockService {
 
         RealTimeDataDTO.Task task = taskList.get(0);
         RealTimeDataDTO.Position position = task.getPosition();
-        String picPointId = position.getPicPointId();
-        PicPosRelPointBO picPosRelPointBO = picPointIdMap.get(picPointId);
-        if(picPosRelPointBO==null){
+        if(position!=null){
+            String picPointId = position.getPicPointId();
+            PicPosRelPointBO picPosRelPointBO = picMapLandmarkMap.get(picPointId);
+            if(picPosRelPointBO==null){
+                position2.setX(mapBO.getMinPosX());
+                position2.setY(mapBO.getMinPosY());
+                position2.setAngle(0d);
+                return position2;
+            }else{
+                position2.setX(picPosRelPointBO.getX());
+                position2.setY(picPosRelPointBO.getY());
+                double x1 = picPosRelPointBO.getX();
+                double y1 = picPosRelPointBO.getY();
+                double x2 = picPosRelPointBO.getEndX();
+                double y2 = picPosRelPointBO.getEndY();
+                double angle=0;
+                if(x2-x1<0.0000000){
+                    angle=Math.PI/2;
+                }else{
+                    angle = Math.atan((y2 - y1) / (x2 - x1));
+                }
+
+                position2.setAngle(angle);
+                return position2;
+            }
+        }else{
             position2.setX(mapBO.getMinPosX());
             position2.setY(mapBO.getMinPosY());
             position2.setAngle(0d);
             return position2;
-        }else{
-            position2.setX(picPosRelPointBO.getX());
-            position2.setY(picPosRelPointBO.getY());
-            position2.setAngle(null);
-            return position2;
         }
+
     }
 
     /**
@@ -385,7 +609,7 @@ public class RobotMockService {
         List<String> landMarkList = new LinkedList<>();
         String preLandMark = "";
         for (String picPointId : picPointIdStrList) {
-            PicPosRelPointBO picPosRelPointBO = picPointIdMap.get(picPointId);
+            PicPosRelPointBO picPosRelPointBO = picMapLandmarkMap.get(picPointId);
             if(picPosRelPointBO!=null){
                 String beginPointName = picPosRelPointBO.getBeginPointName();
                 if(Objects.equals(preLandMark,beginPointName)){
@@ -396,20 +620,262 @@ public class RobotMockService {
             }
         }
 
+        // todo 判断任务id有没有重复
+        for (RealTimeDataDTO.Task task : taskList) {
+            if(task.getId().equals(params.getTaskId())){
+                CreateTaskAck createTaskAck = new CreateTaskAck();
+                createTaskAck.setCmd(CreateTaskCmd.CMD);
+                CreateTaskAck.Result result = new CreateTaskAck.Result();
+                result.setSuccess(false);
+                result.setMapPointList(null);
+                createTaskAck.setResult(result);
+
+                RdpsFrame<CreateTaskAck> ackRdpsFrame = new RdpsFrame<>();
+                ackRdpsFrame.setMsgType("rsp");
+                ackRdpsFrame.setPublisher("mockRdps");
+                ackRdpsFrame.setPublishTime(new Date());
+                ackRdpsFrame.setSeq(rdpsFrame.getSeq());
+                ackRdpsFrame.setData(createTaskAck);
+                try {
+                    String s = objectWriter.writeValueAsString(ackRdpsFrame);
+                    jmsTemplate.convertAndSend(ackTopic, s);
+                } catch (JsonProcessingException e) {
+                    log.error("",e);
+                }
+                return false;
+            }
+        }
+
         RealTimeDataDTO.Task task = new RealTimeDataDTO.Task();
         task.setId(params.getTaskId());
-        task.setAccumulatedTime(0);
+        task.setLaneId(params.getLaneId());
+        task.setTrainNo(params.getTrainNo());
+        task.setDirection(params.getDirection());
         task.setCmdSrc("web");
         task.setPercent(0);
-        task.setStatus(0);
+        task.setAccumulatedTime(0);
         task.setPosition(null);
         task.setPicPointIdStr(params.getPicPointIdStrList());
         task.setLandMarkList(landMarkList);
-        // todo 判断任务id有没有重复
+        task.setStatus(TaskStatus.WAITING.getCode());
+        task.setTaskState(new WaittingState(task));
+        task.setTaskStartTime(new Date());
+
 
         taskList.add(task);
-        // 回复成功
+        /* begin ==========回填数据库============= */
+        BotInspectLog botInspectLog = botInspectLogMapper.selectById(taskId);
+        Date createTime = new Date();
+        int year = DateUtil.year(createTime);
+        int month = DateUtil.month(createTime) + 1;
+        int dayOfMonth = DateUtil.dayOfMonth(createTime);
+        String format = DateUtil.format(createTime, DatePattern.PURE_DATETIME_PATTERN);
+        String dirStr = Paths.get(String.valueOf(year), String.valueOf(month), String.valueOf(dayOfMonth), format).toString();
+        task.setTraceFile(dirStr);
+        botInspectLog.setTraceFile(dirStr);
+        botInspectLogMapper.updateById(botInspectLog);
+        /* end ============回填数据库============ */
+
+       /* begin ==========回复信息============= */
+        CreateTaskAck createTaskAck = new CreateTaskAck();
+        createTaskAck.setCmd(CreateTaskCmd.CMD);
+        CreateTaskAck.Result result = new CreateTaskAck.Result();
+        result.setSuccess(true);
+        result.setMapPointList(landMarkList);
+        createTaskAck.setResult(result);
+
+        RdpsFrame<CreateTaskAck> ackRdpsFrame = new RdpsFrame<>();
+        ackRdpsFrame.setMsgType("rsp");
+        ackRdpsFrame.setPublisher("mockRdps");
+        ackRdpsFrame.setPublishTime(new Date());
+        ackRdpsFrame.setSeq(rdpsFrame.getSeq());
+        ackRdpsFrame.setData(createTaskAck);
+        try {
+            String s = objectWriter.writeValueAsString(ackRdpsFrame);
+            jmsTemplate.convertAndSend(ackTopic, s);
+        } catch (JsonProcessingException e) {
+            log.error("",e);
+        }
+
+       /* end ============回复信息============ */
         return true;
+    }
+
+    private Void handleSuspend(RdpsFrame rdpsFrame){
+        SuspendTaskCmd suspendTaskCmd = BeanUtil.mapToBean(((Map) rdpsFrame.getData()), SuspendTaskCmd.class, false, null);
+        SuspendTaskCmd.Params params = suspendTaskCmd.getParams();
+        Long taskId = params.getTaskId();
+        synchronized (taskList){
+            for (RealTimeDataDTO.Task task : taskList) {
+                if(task.getId().equals(taskId)){
+                    if (TaskStatus.WORKING.getCode().equals(task.getStatus())) {
+                        synchronized (task){
+                            task.setStatus(TaskStatus.SUSPENDING.getCode());
+                            task.setTaskState(new SuspendState());
+                        }
+                    }
+                }
+            }
+        }
+        RdpsBoolAck rdpsBoolAck = new RdpsBoolAck();
+        rdpsBoolAck.setCmd(SuspendTaskCmd.CMD);
+        RdpsBoolAck.Result result = new RdpsBoolAck.Result();
+        result.setSuccess(true);
+        rdpsBoolAck.setResult(result);
+        RdpsFrame<RdpsBoolAck> ackRdpsFrame = new RdpsFrame<>();
+        ackRdpsFrame.setMsgType("rsp");
+        ackRdpsFrame.setPublisher("mockRdps");
+        ackRdpsFrame.setPublishTime(new Date());
+        ackRdpsFrame.setSeq(rdpsFrame.getSeq());
+        ackRdpsFrame.setData(rdpsBoolAck);
+        try {
+            String s = objectWriter.writeValueAsString(ackRdpsFrame);
+            jmsTemplate.convertAndSend(ackTopic, s);
+        } catch (JsonProcessingException e) {
+            log.error("",e);
+        }
+        return null;
+    }
+
+    private Void handleResume(RdpsFrame rdpsFrame){
+        ResumeTaskCmd resumeTaskCmd = BeanUtil.mapToBean(((Map) rdpsFrame.getData()), ResumeTaskCmd.class, false, null);
+        ResumeTaskCmd.Params params = resumeTaskCmd.getParams();
+        Long taskId = params.getTaskId();
+        synchronized (taskList){
+            for (RealTimeDataDTO.Task task : taskList) {
+                if(task.getId().equals(taskId)){
+                    if (TaskStatus.SUSPENDING.getCode().equals(task.getStatus())) {
+                        synchronized (task){
+                            task.setStatus(TaskStatus.WORKING.getCode());
+                            task.setTaskState(new WorkingState(task));
+                        }
+                    }
+                }
+            }
+        }
+        RdpsBoolAck rdpsBoolAck = new RdpsBoolAck();
+        rdpsBoolAck.setCmd(ResumeTaskCmd.CMD);
+        RdpsBoolAck.Result result = new RdpsBoolAck.Result();
+        result.setSuccess(true);
+        rdpsBoolAck.setResult(result);
+        RdpsFrame<RdpsBoolAck> ackRdpsFrame = new RdpsFrame<>();
+        ackRdpsFrame.setMsgType("rsp");
+        ackRdpsFrame.setPublisher("mockRdps");
+        ackRdpsFrame.setPublishTime(new Date());
+        ackRdpsFrame.setSeq(rdpsFrame.getSeq());
+        ackRdpsFrame.setData(rdpsBoolAck);
+        try {
+            String s = objectWriter.writeValueAsString(ackRdpsFrame);
+            jmsTemplate.convertAndSend(ackTopic, s);
+        } catch (JsonProcessingException e) {
+            log.error("",e);
+        }
+        return null;
+    }
+
+    private Void handleStop(RdpsFrame rdpsFrame){
+        StopTaskCmd stopTaskCmd = BeanUtil.mapToBean(((Map) rdpsFrame.getData()), StopTaskCmd.class, false, null);
+        StopTaskCmd.Params params = stopTaskCmd.getParams();
+        Long taskId = params.getTaskId();
+        synchronized (taskList){
+            Iterator<RealTimeDataDTO.Task> iterator = taskList.iterator();
+            while (iterator.hasNext()){
+                RealTimeDataDTO.Task task = iterator.next();
+                if(task.getId().equals(taskId)){
+                    synchronized (task) {
+                        task.setStatus(TaskStatus.STOPPED.getCode());
+                        task.setTaskState(new SuspendState());
+                    }
+                    iterator.remove();
+                    BotInspectLog botInspectLog = botInspectLogMapper.selectById(taskId);
+                    if(botInspectLog!=null){
+                        botInspectLog.setTaskStatus(TaskStatus.STOPPED.getCode());
+                        botInspectLog.setTranceStatus(100);
+                        botInspectLogMapper.updateById(botInspectLog);
+                    }
+                }
+            }
+        }
+        RdpsBoolAck rdpsBoolAck = new RdpsBoolAck();
+        rdpsBoolAck.setCmd(StopTaskCmd.CMD);
+        RdpsBoolAck.Result result = new RdpsBoolAck.Result();
+        result.setSuccess(true);
+        rdpsBoolAck.setResult(result);
+        RdpsFrame<RdpsBoolAck> ackRdpsFrame = new RdpsFrame<>();
+        ackRdpsFrame.setMsgType("rsp");
+        ackRdpsFrame.setPublisher("mockRdps");
+        ackRdpsFrame.setPublishTime(new Date());
+        ackRdpsFrame.setSeq(rdpsFrame.getSeq());
+        ackRdpsFrame.setData(rdpsBoolAck);
+        try {
+            String s = objectWriter.writeValueAsString(ackRdpsFrame);
+            jmsTemplate.convertAndSend(ackTopic, s);
+        } catch (JsonProcessingException e) {
+            log.error("",e);
+        }
+        return null;
+    }
+
+    private Void handleChangeQueuePos(RdpsFrame rdpsFrame){
+        ChangeQueuePosCmd changeQueuePosCmd = BeanUtil.mapToBean(((Map) rdpsFrame.getData()), ChangeQueuePosCmd.class, false, null);
+        ChangeQueuePosCmd.Params params = changeQueuePosCmd.getParams();
+        Integer pos = params.getPos();
+        Long taskId = params.getTaskId();
+        synchronized (taskList){
+            RealTimeDataDTO.Task tagetTask=null;
+            for (RealTimeDataDTO.Task task : taskList) {
+                if(task.getId().equals(taskId)){
+                    tagetTask=task;
+                }
+            }
+            taskList.remove(tagetTask);
+            taskList.add(pos, tagetTask);
+        }
+        RdpsBoolAck rdpsBoolAck = new RdpsBoolAck();
+        rdpsBoolAck.setCmd(ChangeQueuePosCmd.CMD);
+        RdpsBoolAck.Result result = new RdpsBoolAck.Result();
+        result.setSuccess(true);
+        rdpsBoolAck.setResult(result);
+        RdpsFrame<RdpsBoolAck> ackRdpsFrame = new RdpsFrame<>();
+        ackRdpsFrame.setMsgType("rsp");
+        ackRdpsFrame.setPublisher("mockRdps");
+        ackRdpsFrame.setPublishTime(new Date());
+        ackRdpsFrame.setSeq(rdpsFrame.getSeq());
+        ackRdpsFrame.setData(rdpsBoolAck);
+        try {
+            String s = objectWriter.writeValueAsString(ackRdpsFrame);
+            jmsTemplate.convertAndSend(ackTopic, s);
+        } catch (JsonProcessingException e) {
+            log.error("",e);
+        }
+        return null;
+    }
+
+    private Void handleGohome(RdpsFrame rdpsFrame){
+        GoHomeCmd goHomeCmd = BeanUtil.mapToBean(((Map) rdpsFrame.getData()), GoHomeCmd.class, false, null);
+        GoHomeCmd.Params params = goHomeCmd.getParams();
+        synchronized (taskList){
+           taskList.clear();
+        }
+        mockBattery.setCharging(true);
+        RdpsBoolAck rdpsBoolAck = new RdpsBoolAck();
+        rdpsBoolAck.setCmd(GoHomeCmd.CMD);
+        RdpsBoolAck.Result result = new RdpsBoolAck.Result();
+        result.setSuccess(true);
+        rdpsBoolAck.setResult(result);
+        RdpsFrame<RdpsBoolAck> ackRdpsFrame = new RdpsFrame<>();
+        ackRdpsFrame.setMsgType("rsp");
+        ackRdpsFrame.setPublisher("mockRdps");
+        ackRdpsFrame.setPublishTime(new Date());
+        ackRdpsFrame.setSeq(rdpsFrame.getSeq());
+        ackRdpsFrame.setData(rdpsBoolAck);
+        try {
+            String s = objectWriter.writeValueAsString(ackRdpsFrame);
+            jmsTemplate.convertAndSend(ackTopic, s);
+        } catch (JsonProcessingException e) {
+            log.error("",e);
+        }
+        return null;
     }
 
     /**
@@ -420,87 +886,8 @@ public class RobotMockService {
             return;
         }
         RealTimeDataDTO.Task task = taskList.get(0);
-        synchronized (task){}
-        Integer status = task.getStatus();
-        if(TaskStatus.WAITING.getCode().equals(status)){    // 任务等待中
-            List<String> picPointIdStrList = task.getPicPointIdStr();
-            List<String> landMarkList = task.getLandMarkList();
-            if(picPointIdStrList.isEmpty()){
-                return;
-            }
-            // 当前要去的拍照点
-            int curPicPointIdx =0;
-            int curLandMarkIdx=0;
-            String picPointId=null;
-            Map<String, Object> botPicCfg=null;
-            for(int i=curPicPointIdx,size=picPointIdStrList.size();i<size;i++){
-                picPointId=  picPointIdStrList.get(curPicPointIdx);
-                botPicCfg = botPicPosCfgMap.get(picPointId);
-                curPicPointIdx=i;
-                if(botPicCfg!=null){
-                    break;
-                }
-            }
-            if(botPicCfg==null){ // 找不到一个有效的拍照点则任务完成
-                task.setStatus(TaskStatus.FINISHED.getCode());
-                task.setCurPicPointIdx(curPicPointIdx);
-            }else{  // 找到拍照点
-                Integer carriageCode = (Integer) botPicCfg.get("carriageCode");
-                task.setStatus(TaskStatus.WORKING.getCode());
-                RealTimeDataDTO.Position position = new RealTimeDataDTO.Position();
-                position.setPicPointId(picPointId);
-                PicPosRelPointBO picPosRelPointBO = picPointIdMap.get(picPointId);
-                if(picPosRelPointBO!=null){
-                    String landMarkName = landMarkList.get(curLandMarkIdx);
-                    if (!Objects.equals(landMarkName, picPosRelPointBO.getBeginPointName())) {
-                        curLandMarkIdx++;
-                        task.setCurLandMarkIdx(curLandMarkIdx);
-                    }
-                    position.setPrePassPointIdx(curLandMarkIdx);
-                }else{
-                    position.setPrePassPointIdx(0);
-                }
-
-                position.setCarriage(carriageCode);
-                position.setAgvPosPercent(curPicPointIdx %10 *10);
-
-                task.setPosition(position);
-                task.setCurPicPointIdx(curPicPointIdx);
-            }
-        }else if(TaskStatus.WORKING.getCode().equals(status)){
-            List<String> picPointIdStr = task.getPicPointIdStr();
-            if(picPointIdStr.isEmpty()){
-                return;
-            }
-            int curPicPoint=task.getCurPicPointIdx()+1;
-            if(curPicPoint>=picPointIdStr.size()){
-
-            }else{
-
-            }
-            String picPointId=  picPointIdStr.get(curPicPoint);
-            Map<String, Object> botPicCfg = botPicPosCfgMap.get(picPointId);
-            if(botPicCfg==null){
-                return;
-            }
-            Integer carriageCode = (Integer) botPicCfg.get("carriageCode");
-            Integer axleCode = (Integer) botPicCfg.get("axleCode");
-
-            task.setStatus(TaskStatus.WORKING.getCode());
-            RealTimeDataDTO.Position position = new RealTimeDataDTO.Position();
-            position.setPicPointId(picPointId);
-            position.setPrePassPointIdx(curPicPoint);
-            position.setCarriage(carriageCode);
-            position.setAgvPosPercent(curPicPoint%10 *10);
-
-            task.setPosition(position);
-            task.setCurPicPointIdx(curPicPoint);
-        }
-
-        task.setAccumulatedTime(Long.valueOf(DateUtil.between(task.getTaskStartTime(), new Date(), DateUnit.MINUTE)).intValue());
-        double v = (task.getCurPicPointIdx() + 1.0) / task.getPicPointIdStr().size();
-        task.setPercent(Double.valueOf(v).intValue());
-
+        log.info("步进任务：{}", task.getId());
+        task.doAction();
     }
 
 }

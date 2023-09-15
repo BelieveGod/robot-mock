@@ -8,7 +8,7 @@ import lombok.Getter;
  * @author LTJ
  * @date 2022/3/16
  */
-@Getter
+@Data
 public class StopTaskCmd {
     public static final String CMD = "stopTask";
     private String cmd=CMD;
@@ -16,7 +16,7 @@ public class StopTaskCmd {
     private Params params=new Params();
 
     @Data
-   private static class Params{
+   public static class Params{
        private Long taskId;
 
 

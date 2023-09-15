@@ -15,6 +15,9 @@ public class MockLift {
     private Integer moveStatus=1;
     private List<String> troubleCodeList = new LinkedList<>();
 
+    public MockLift(Integer id) {
+        this.id = id;
+    }
 
     public Integer getStatus() {
         return status;

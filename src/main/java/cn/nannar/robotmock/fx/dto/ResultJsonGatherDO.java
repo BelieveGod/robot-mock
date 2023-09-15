@@ -1,5 +1,7 @@
 package cn.nannar.robotmock.fx.dto;
 
+import cn.hutool.core.date.DatePattern;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
 import java.util.Date;
@@ -36,6 +38,7 @@ public class ResultJsonGatherDO {
     /**
      * 巡检开始时间
      */
+    @JsonFormat(pattern = DatePattern.NORM_DATETIME_PATTERN)
     private Date traceTime;
     /**
      * 列车号
@@ -44,6 +47,6 @@ public class ResultJsonGatherDO {
     /**
      * 拍照点详细数据
      */
-    List<cn.nuoli.monitor.modular.robot.vo.rdps.ResultJsonSingleDO> photoData;
+    List<ResultJsonSingleDO> photoData;
 
 }

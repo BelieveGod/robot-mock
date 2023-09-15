@@ -12,5 +12,18 @@ spring:
     password: command
     driverClassName: com.microsoft.sqlserver.jdbc.SQLServerDriver
 
+mybatis-plus:
+  mapper-locations: classpath*:**/mapping/*.xml
+  configuration:
+    # 开启驼峰命名映射
+    map-underscore-to-camel-case: true
+    # 当没有为参数指定特定的 JDBC 类型时，空值的默认 JDBC 类型。
+    jdbc-type-for-null: 'NULL'
+    # 指定当结果集中值为 null 的时候是否调用映射对象的 setter（map 对象时为 put）方法
+    call-setters-on-nulls: true
+    # 打印日志
+    #log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
 robot:
   mapFile: C:\Users\tianjie_liang\Desktop\task.xmap
+  mockDataFile: C:\Users\tianjie_liang\Desktop\robotmockdata
+  dcsData: D:\DCS_data

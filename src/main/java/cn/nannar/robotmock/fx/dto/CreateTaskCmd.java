@@ -10,7 +10,7 @@ import java.util.List;
  * @author LTJ
  * @date 2022/3/16
  */
-@Getter
+@Data
 public class CreateTaskCmd {
     public static final String CMD = "createTask";
     private String cmd=CMD;

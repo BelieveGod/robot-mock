@@ -18,9 +18,13 @@ public class MockBattery {
     private Double percent;
 
     private Boolean charging=false;
-
+    /**
+     * 每秒的输出率
+     */
     private double outputRate=1.0 / 36;
-
+    /**
+     * 每秒的输入率
+     */
     private double intputRate=1.0/9;
 
     private Integer status=0;
@@ -40,15 +44,16 @@ public class MockBattery {
         long l = DateUtil.betweenMs(startTime, now);
         long secondDiff = l / 1000;
         if(!charging){
-            int currentPercent = Long.valueOf(Math.round(percent - outputRate * l)).intValue();
+            int currentPercent = Long.valueOf(Math.round(percent - outputRate * secondDiff)).intValue();
             if(currentPercent<0){
                 currentPercent=0;
             }
             return currentPercent;
         }else{
-            int currentPercent = Long.valueOf(Math.round(percent + outputRate * l)).intValue();
+            int currentPercent = Long.valueOf(Math.round(percent + outputRate * secondDiff)).intValue();
             if(currentPercent>100){
                 currentPercent=100;
+                setCharging(false);
             }
             return currentPercent;
         }
@@ -80,6 +85,12 @@ public class MockBattery {
 
     public Boolean getCharging(){
         return charging;
+    }
+
+    public void setCharging(Boolean charging){
+        percent =  Integer.valueOf(getCurrentPercent()).doubleValue();
+        startTime = new Date();
+        this.charging = charging;
     }
 
     public List<RealTimeDataDTO.TroubleCode> getTroubleCodeList() {

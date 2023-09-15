@@ -1,8 +1,9 @@
 package cn.nannar.robotmock.fx.dto;
 
+import cn.hutool.core.date.DatePattern;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
-import javax.validation.constraints.NotEmpty;
 import java.util.Date;
 import java.util.List;
 
@@ -20,6 +21,7 @@ public class ResultJsonSingleDO {
     /**
      * 机器人巡检开始时间
      */
+    @JsonFormat(pattern = DatePattern.NORM_DATETIME_PATTERN)
     private Date traceTime;
 
     /**
@@ -91,7 +93,6 @@ public class ResultJsonSingleDO {
         /**
          * 告警的标注框 x1,y1,x2,y2
          */
-        @NotEmpty
         private List<Integer> picRect;
     }
 }

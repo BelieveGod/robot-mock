@@ -9,7 +9,7 @@ import lombok.Getter;
  * @author LTJ
  * @date 2022/3/16
  */
-@Getter
+@Data
 public class SuspendTaskCmd {
     public static final String CMD = "suspendTask";
     private String cmd = CMD;
@@ -17,7 +17,7 @@ public class SuspendTaskCmd {
     private Params params = new Params();
 
     @Data
-    private static class Params {
+    public static class Params {
         private Long taskId;
 
 

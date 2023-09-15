@@ -2,7 +2,6 @@ package cn.nannar.robotmock.fx.dto;
 
 import lombok.Data;
 
-import javax.validation.constraints.NotNull;
 import java.time.LocalDateTime;
 import java.util.LinkedList;
 import java.util.List;
@@ -152,28 +151,24 @@ public class RobotStorageDO {
         /**
          * 已上传完毕的拍照点
          */
-        @NotNull
         private Integer photoSeq;
         /**
          * 所属于的停车点编号
          */
-        @NotNull
         private Integer parkPointSeq;
         /**
          * 所属车厢编码
          */
-        @NotNull
         private Integer carriage;
         /**
          * 停车点基于车厢的位置百分比
          */
-        @NotNull
         private Integer agvPosPercent;
 
         /**
          * 告警框信息集合
          */
-        private List<cn.nuoli.monitor.modular.robot.vo.rdps.ResultJsonSingleDO.ErrorInfo> partInfo;
+        private List<ResultJsonSingleDO.ErrorInfo> partInfo;
         /**
          * 算法标记的框框信息
          */

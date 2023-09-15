@@ -1,5 +1,7 @@
 package cn.nannar.robotmock.fx.dto;
 
+import cn.nannar.robotmock.fx.tasksatus.TaskState;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Data;
 
 import java.util.Date;
@@ -201,12 +203,24 @@ public class RealTimeDataDTO {
          */
         private Integer status;
 
+        @JsonIgnore
         private Date taskStartTime;
 
+        @JsonIgnore
         private List<String> picPointIdStr;
+        @JsonIgnore
         private int curPicPointIdx;
+        @JsonIgnore
         private List<String> landMarkList;
+        @JsonIgnore
         private int curLandMarkIdx=0;
+        @JsonIgnore
+        private TaskState taskState;
+        @JsonIgnore
+        private String traceFile;
+        public void doAction(){
+            taskState.doAction();
+        }
     }
 
     /**
